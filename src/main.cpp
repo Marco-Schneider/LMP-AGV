@@ -3,6 +3,7 @@
 #include <QTRSensors.h>
 #include <BluetoothSerial.h>
 #include <PID.h>
+#include <ESP32Servo.h>
 
 #if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
 #error Bluetooth is not enabled! Please run `make menuconfig` to and enable it
@@ -20,11 +21,15 @@
 #define STBY 19
 
 // Speed
-#define maxSpeed 255
+#define maxSpeed 200
 
 /* Motors objects */
 Motor leftMotor = Motor(AIN1, AIN2, PWMA, 1, STBY);
 Motor rightMotor = Motor(BIN1, BIN2, PWMB, 1, STBY);
+
+Servo servoMotor;
+
+#define servoMotorPin 13
 
 BluetoothSerial SerialBT;
 
@@ -39,15 +44,66 @@ uint16_t lineSensorValues[numberOfSensors];
 void configureLineSensor();
 void calibrateLineSensor();
 
+// Discrete Sensors
+#define leftSensor 39
+#define rightSensor 36
+#define loadSensor 15
+
+bool leftSensorDetected = false;
+bool rightSensorDetected = false;
+
+int countLeft = 0;
+int countRight = 0;
+
+bool loaded = false;
+bool unloading = false;
+
 float map_line_position(float x, float inMin, float inMax, float outMin, float outMax) {
   return (x - inMin) * (outMax - outMin) / (inMax - inMin) + outMin;
 }
 
+void checkLeftSensor() {
+  leftSensorDetected = digitalRead(leftSensor) == LOW ?
+    true : false;
+}
+
+void checkRightSensor() {
+  rightSensorDetected = digitalRead(rightSensor) == LOW ?
+    true : false;
+}
+
+void checkState() {
+  loaded = loaded == true ? false : true;
+}
+
+int countMarkings = 0;
+
 void setup() {
   SerialBT.begin("LMP-AGV-V1");
+
   configureLineSensor();
   calibrateLineSensor();
-  pid.updateConstants(20.0, 0.0, 0.0);
+  pid.updateConstants(5.0, 0.0, 35.0);
+
+  pinMode(leftSensor, INPUT);
+  pinMode(rightSensor, INPUT);
+  pinMode(loadSensor, INPUT);
+
+  attachInterrupt(leftSensor, checkLeftSensor, RISING);
+  attachInterrupt(rightSensor, checkRightSensor, RISING);
+  attachInterrupt(digitalPinToInterrupt(loadSensor), checkState, FALLING);
+
+  servoMotor.attach(servoMotorPin);
+}
+
+void loadingRoutine() {
+  while(!loaded) {
+    leftMotor.drive(0);
+    rightMotor.drive(0);
+    servoMotor.write(180);
+    countMarkings = countMarkings == 0 ? countMarkings + 1 : countMarkings;
+    delay(500);
+  }
 }
 
 void loop() {
@@ -55,6 +111,24 @@ void loop() {
   float correction = pid.calculateCorrection(linePosition); 
   leftMotor.drive(constrain((1.0 - correction) * maxSpeed, (-1.0/5.0) * maxSpeed, maxSpeed));
   rightMotor.drive(constrain((1.0 + correction) * maxSpeed, (-1.0/5.0) * maxSpeed, maxSpeed)); 
+  if(rightSensorDetected && !loaded) {
+    loadingRoutine();
+    delay(1500);
+    servoMotor.write(90);
+  }
+  // SerialBT.println("left: ");
+  // SerialBT.println(digitalRead(leftSensor));
+  // SerialBT.println("right: ");
+  // SerialBT.println(digitalRead(rightSensor));
+  // SerialBT.println("load: ");
+  // SerialBT.println(loaded);
+  // SerialBT.println("left: ");
+  // SerialBT.println(leftSensorDetected);
+  // SerialBT.println("right: ");
+  // SerialBT.println(rightSensorDetected);
+  // SerialBT.println("countMarkings: ");
+  // SerialBT.println(countMarkings);
+  // delay(500);
   // SerialBT.print("linePosition: ");
   // SerialBT.println(linePosition);
   // SerialBT.print("leftMotor: ");
@@ -86,16 +160,4 @@ void calibrateLineSensor() {
   delay(500);
   digitalWrite(LED_BUILTIN, LOW);
   SerialBT.println("Finished calibration!");
-}
-
-float constrain_new(float value, float min, float max) {
-  if (value < min) {
-    return min;
-  } 
-  else if (value > max) {
-    return max;
-  } 
-  else {
-    return value;
-  }
 }
