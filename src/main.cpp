@@ -16,7 +16,7 @@ QTRSensors lineSensor;
 PIDController pid;
 uint16_t lineSensorValues[numberOfSensors];
 
-uint16_t line_position = 0;
+float line_position = 0;
 float correction = 0;
 
 void configureLineSensor();
@@ -43,10 +43,11 @@ int countMarkings = 0;
 
 void setup() {
 
-  Serial.begin(115200);
+  // Serial.begin(115200);
+  // SerialBT.begin("LMP-AGV-V2");
 
-  // configureLineSensor();
-  // calibrateLineSensor();
+  configureLineSensor();
+  calibrateLineSensor();
   pid.updateConstants(5.0, 0.0, 35.0);
 
   pinMode(leftSensor, INPUT);
@@ -73,7 +74,7 @@ void setup() {
     "reading_sensors",
     4096,
     NULL,
-    3,
+    4,
     NULL,
     PRO_CPU_NUM
   );
@@ -88,15 +89,15 @@ void setup() {
     APP_CPU_NUM
   );
 
-  xTaskCreatePinnedToCore(
-    &motors_actuation,
-    "running_motors",
-    4096,
-    NULL,
-    4,
-    NULL,
-    APP_CPU_NUM
-  );
+  // xTaskCreatePinnedToCore(
+  //   &motors_actuation,
+  //   "running_motors",
+  //   4096,
+  //   NULL,
+  //   3,
+  //   NULL,
+  //   APP_CPU_NUM
+  // );
 }
 
 void loadingRoutine() {
@@ -146,44 +147,43 @@ void calibrateLineSensor() {
 /* Reads and updates the variables related to each one of the sensors */
 void read_sensors(void* parameters) {
   for(;;) {
-    Serial.println("\nread_sensors");
+    // Serial.println("\nread_sensors");
     line_position = map_line_position(
       lineSensor.readLineWhite(lineSensorValues), 0.0, 7000.0, -1.0, 1.0
     );
     rightSensorDetected = digitalRead(rightSensor) == 1; 
     leftSensorDetected = digitalRead(leftSensor) == 1;
-    Serial.println("SENSOR\n");
-
+    // Serial.println("SENSOR\n");
     vTaskDelay(1);
   }
   vTaskDelete(NULL);
 }
 
 void control_loop(void* parameters) {
-  const TickType_t xFrequency = 5 / portTICK_PERIOD_MS;
-  TickType_t xLastWakeTime = xTaskGetTickCount();
   for(;;) {
-    if(xSemaphoreTake(xLinePositionSemaphore, pdMS_TO_TICKS(5)) == true) {
-      Serial.println("\ncontrol_loop");
+    // if(xSemaphoreTake(xLinePositionSemaphore, pdMS_TO_TICKS(2)) == true) {
+      // Serial.println("\ncontrol_loop");
       correction = pid.calculateCorrection(line_position);
-      Serial.println("CONTROLE\n");
-      xSemaphoreGive(xLinePositionSemaphore);
-    }
-    vTaskDelayUntil(&xLastWakeTime, xFrequency);
+      // Serial.println("CONTROLE\n");
+      leftMotor.drive(constrain((1.0 - correction) * maxSpeed, (-1.0/5.0) * maxSpeed, maxSpeed));
+      rightMotor.drive(constrain((1.0 + correction) * maxSpeed, (-1.0/5.0) * maxSpeed, maxSpeed)); 
+      // xSemaphoreGive(xLinePositionSemaphore);
+    // }
+      vTaskDelay(2 / portTICK_PERIOD_MS);
   }
   vTaskDelete(NULL);
 }
 
 void motors_actuation(void* parameters) {
   for(;;) {
-    if(xSemaphoreTake(xLinePositionSemaphore, pdMS_TO_TICKS(5)) == true) {
+    if(xSemaphoreTake(xLinePositionSemaphore, pdMS_TO_TICKS(2)) == true) {
       Serial.println("\nmotors_actuation");
-      leftMotor.drive(constrain((1.0 - correction) * maxSpeed, (-1.0/5.0) * maxSpeed, maxSpeed));
-      rightMotor.drive(constrain((1.0 + correction) * maxSpeed, (-1.0/5.0) * maxSpeed, maxSpeed)); 
+      leftMotor.drive(constrain((1.0 - correction) * maxSpeed, (-1.0/20.0) * maxSpeed, maxSpeed));
+      rightMotor.drive(constrain((1.0 + correction) * maxSpeed, (-1.0/20.0) * maxSpeed, maxSpeed)); 
       Serial.println("MOTOR\n");
       xSemaphoreGive(xLinePositionSemaphore);
     }
-    taskYIELD();
+    vTaskDelay(1);
   }
   vTaskDelete(NULL);
 }
