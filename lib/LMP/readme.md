@@ -1,0 +1,1 @@
+This library merely contains the pinout information for the Line Master Prototype
