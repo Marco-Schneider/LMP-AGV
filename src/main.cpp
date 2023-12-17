@@ -2,90 +2,101 @@
 #include <SparkFun_TB6612.h>
 #include <QTRSensors.h>
 #include <PID.h>
+#include <LMP.h>
 #include <ESP32Servo.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
-#define LED_BUILTIN 2
-
-// TB6612FNG pinout
-#define AIN1 18
-#define BIN1 21
-#define AIN2 5
-#define BIN2 22
-#define PWMA 2
-#define PWMB 23
-#define STBY 19
-
-// Speed
-#define maxSpeed 200
-
-/* Motors objects */
 Motor leftMotor = Motor(AIN1, AIN2, PWMA, 1, STBY);
 Motor rightMotor = Motor(BIN1, BIN2, PWMB, 1, STBY);
 
 Servo servoMotor;
 
-#define servoMotorPin 13
-
 QTRSensors lineSensor;
-
 PIDController pid;
-
-#define numberOfSensors 8
-uint8_t lineSensorPins[numberOfSensors] = {34, 35, 32, 33, 25, 26, 27, 14};
 uint16_t lineSensorValues[numberOfSensors];
+
+uint16_t line_position = 0;
+float correction = 0;
 
 void configureLineSensor();
 void calibrateLineSensor();
 
-// Discrete Sensors
-#define leftSensor 39
-#define rightSensor 36
-#define loadSensor 15
-
 bool leftSensorDetected = false;
 bool rightSensorDetected = false;
-
-int countLeft = 0;
-int countRight = 0;
 
 bool loaded = false;
 bool unloading = false;
 
-float map_line_position(float x, float inMin, float inMax, float outMin, float outMax) {
-  return (x - inMin) * (outMax - outMin) / (inMax - inMin) + outMin;
-}
+/* Here are the scope definitions of the tasks to be used by the robot */
+void read_sensors(void* parameters);
+void unloading_routine(void* parameters);
+void loading_routine(void* parameters);
+void control_loop(void* parameters);
+void motors_actuation(void* parameters);
 
-void checkLeftSensor() {
-  leftSensorDetected = digitalRead(leftSensor) == HIGH ?
-    true : false;
-}
+SemaphoreHandle_t xLinePositionSemaphore;
 
-void checkRightSensor() {
-  rightSensorDetected = digitalRead(rightSensor) == HIGH ?
-    true : false;
-}
-
-void checkState() {
-  loaded = loaded == true ? false : true;
-}
+float map_line_position(float x, float inMin, float inMax, float outMin, float outMax);
 
 int countMarkings = 0;
 
 void setup() {
 
-  configureLineSensor();
-  calibrateLineSensor();
+  Serial.begin(115200);
+
+  // configureLineSensor();
+  // calibrateLineSensor();
   pid.updateConstants(5.0, 0.0, 35.0);
 
   pinMode(leftSensor, INPUT);
   pinMode(rightSensor, INPUT);
   pinMode(loadSensor, INPUT);
 
-  attachInterrupt(leftSensor, checkLeftSensor, RISING);
-  attachInterrupt(digitalPinToInterrupt(rightSensor), checkRightSensor, RISING);
-  attachInterrupt(digitalPinToInterrupt(loadSensor), checkState, FALLING);
-
   servoMotor.attach(servoMotorPin);
+
+  xLinePositionSemaphore = xSemaphoreCreateBinary();
+  xSemaphoreGive(xLinePositionSemaphore);
+
+  /* 
+    Creating the tasks to be used by the robot, based on previous research, we have the following:
+
+    1 - reading_sensors - To be run on the core 0 - Priority 3
+    2 - control_loop - To be run on the core 1 - Priority 5
+    3 - motors_actuation - To be run on the core 1 - Priority 4
+    4 - loading_unloading - To be run on the core 1 - Priority 6
+
+  */
+
+  xTaskCreatePinnedToCore(
+    &read_sensors,
+    "reading_sensors",
+    4096,
+    NULL,
+    3,
+    NULL,
+    PRO_CPU_NUM
+  );
+
+  xTaskCreatePinnedToCore(
+    &control_loop,
+    "control_loop",
+    4096,
+    NULL,
+    5,
+    NULL,
+    APP_CPU_NUM
+  );
+
+  xTaskCreatePinnedToCore(
+    &motors_actuation,
+    "running_motors",
+    4096,
+    NULL,
+    4,
+    NULL,
+    APP_CPU_NUM
+  );
 }
 
 void loadingRoutine() {
@@ -106,30 +117,7 @@ void unloadingRoutine() {
   }
 }
 
-void loop() {
-  float linePosition = map_line_position(lineSensor.readLineWhite(lineSensorValues), 0.0, 7000.0, -1.0, 1.0);
-  float correction = pid.calculateCorrection(linePosition); 
-  leftMotor.drive(constrain((1.0 - correction) * maxSpeed, (-1.0/5.0) * maxSpeed, maxSpeed));
-  rightMotor.drive(constrain((1.0 + correction) * maxSpeed, (-1.0/5.0) * maxSpeed, maxSpeed)); 
-  if(rightSensorDetected && !loaded) {
-    loadingRoutine();
-    delay(1500);
-    servoMotor.write(90);
-    leftMotor.drive(100);
-    rightMotor.drive(100);
-    delay(200);
-    rightSensorDetected = false;
-  }
-  if(rightSensorDetected && loaded) {
-    unloadingRoutine();
-    delay(1500);
-    servoMotor.write(90);
-    leftMotor.drive(100);
-    rightMotor.drive(100);
-    delay(200);
-    rightSensorDetected = false;
-  }
-}
+void loop() { }
 
 void configureLineSensor() {
   lineSensor.setTypeAnalog();
@@ -153,4 +141,53 @@ void calibrateLineSensor() {
   }
   delay(500);
   digitalWrite(LED_BUILTIN, LOW);
+}
+
+/* Reads and updates the variables related to each one of the sensors */
+void read_sensors(void* parameters) {
+  for(;;) {
+    Serial.println("\nread_sensors");
+    line_position = map_line_position(
+      lineSensor.readLineWhite(lineSensorValues), 0.0, 7000.0, -1.0, 1.0
+    );
+    rightSensorDetected = digitalRead(rightSensor) == 1; 
+    leftSensorDetected = digitalRead(leftSensor) == 1;
+    Serial.println("SENSOR\n");
+
+    vTaskDelay(1);
+  }
+  vTaskDelete(NULL);
+}
+
+void control_loop(void* parameters) {
+  const TickType_t xFrequency = 5 / portTICK_PERIOD_MS;
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+  for(;;) {
+    if(xSemaphoreTake(xLinePositionSemaphore, pdMS_TO_TICKS(5)) == true) {
+      Serial.println("\ncontrol_loop");
+      correction = pid.calculateCorrection(line_position);
+      Serial.println("CONTROLE\n");
+      xSemaphoreGive(xLinePositionSemaphore);
+    }
+    vTaskDelayUntil(&xLastWakeTime, xFrequency);
+  }
+  vTaskDelete(NULL);
+}
+
+void motors_actuation(void* parameters) {
+  for(;;) {
+    if(xSemaphoreTake(xLinePositionSemaphore, pdMS_TO_TICKS(5)) == true) {
+      Serial.println("\nmotors_actuation");
+      leftMotor.drive(constrain((1.0 - correction) * maxSpeed, (-1.0/5.0) * maxSpeed, maxSpeed));
+      rightMotor.drive(constrain((1.0 + correction) * maxSpeed, (-1.0/5.0) * maxSpeed, maxSpeed)); 
+      Serial.println("MOTOR\n");
+      xSemaphoreGive(xLinePositionSemaphore);
+    }
+    taskYIELD();
+  }
+  vTaskDelete(NULL);
+}
+
+float map_line_position(float x, float inMin, float inMax, float outMin, float outMax) {
+  return (x - inMin) * (outMax - outMin) / (inMax - inMin) + outMin;
 }
