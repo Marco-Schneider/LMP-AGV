@@ -48,7 +48,7 @@ void setup() {
 
   configureLineSensor();
   calibrateLineSensor();
-  pid.updateConstants(5.0, 0.0, 35.0);
+  pid.updateConstants(1.2, 0.0, 65.0);
 
   pinMode(leftSensor, INPUT);
   pinMode(rightSensor, INPUT);
@@ -74,7 +74,7 @@ void setup() {
     "reading_sensors",
     4096,
     NULL,
-    4,
+    2,
     NULL,
     PRO_CPU_NUM
   );
@@ -84,20 +84,20 @@ void setup() {
     "control_loop",
     4096,
     NULL,
-    5,
+    3,
     NULL,
     APP_CPU_NUM
   );
 
-  // xTaskCreatePinnedToCore(
-  //   &motors_actuation,
-  //   "running_motors",
-  //   4096,
-  //   NULL,
-  //   3,
-  //   NULL,
-  //   APP_CPU_NUM
-  // );
+  xTaskCreatePinnedToCore(
+    &motors_actuation,
+    "running_motors",
+    4096,
+    NULL,
+    5,
+    NULL,
+    APP_CPU_NUM
+  );
 }
 
 void loadingRoutine() {
@@ -160,16 +160,16 @@ void read_sensors(void* parameters) {
 }
 
 void control_loop(void* parameters) {
+  const TickType_t xFrequency = 2 / portTICK_PERIOD_MS;
+  TickType_t xLastWakeTime = xTaskGetTickCount();
   for(;;) {
-    // if(xSemaphoreTake(xLinePositionSemaphore, pdMS_TO_TICKS(2)) == true) {
-      // Serial.println("\ncontrol_loop");
+    if(xSemaphoreTake(xLinePositionSemaphore, pdMS_TO_TICKS(2)) == true) {
+      Serial.println("\ncontrol_loop");
       correction = pid.calculateCorrection(line_position);
-      // Serial.println("CONTROLE\n");
-      leftMotor.drive(constrain((1.0 - correction) * maxSpeed, (-1.0/5.0) * maxSpeed, maxSpeed));
-      rightMotor.drive(constrain((1.0 + correction) * maxSpeed, (-1.0/5.0) * maxSpeed, maxSpeed)); 
-      // xSemaphoreGive(xLinePositionSemaphore);
-    // }
-      vTaskDelay(2 / portTICK_PERIOD_MS);
+      Serial.println("CONTROLE\n");
+      xSemaphoreGive(xLinePositionSemaphore);
+    }
+    vTaskDelayUntil(&xLastWakeTime, xFrequency);
   }
   vTaskDelete(NULL);
 }
@@ -177,10 +177,10 @@ void control_loop(void* parameters) {
 void motors_actuation(void* parameters) {
   for(;;) {
     if(xSemaphoreTake(xLinePositionSemaphore, pdMS_TO_TICKS(2)) == true) {
-      Serial.println("\nmotors_actuation");
-      leftMotor.drive(constrain((1.0 - correction) * maxSpeed, (-1.0/20.0) * maxSpeed, maxSpeed));
-      rightMotor.drive(constrain((1.0 + correction) * maxSpeed, (-1.0/20.0) * maxSpeed, maxSpeed)); 
-      Serial.println("MOTOR\n");
+      // Serial.println("\nmotors_actuation");
+      leftMotor.drive(constrain((1.0 - correction) * maxSpeed, (-1.0/5.0) * maxSpeed, maxSpeed));
+      rightMotor.drive(constrain((1.0 + correction) * maxSpeed, (-1.0/5.0) * maxSpeed, maxSpeed)); 
+      // Serial.println("MOTOR\n");
       xSemaphoreGive(xLinePositionSemaphore);
     }
     vTaskDelay(1);
