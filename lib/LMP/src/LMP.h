@@ -14,7 +14,7 @@
 #define PWMB 23
 #define STBY 19
 
-#define maxSpeed 200
+#define maxSpeed 255
 
 #define servoMotorPin 13
 

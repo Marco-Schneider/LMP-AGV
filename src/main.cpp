@@ -2,134 +2,135 @@
 #include <SparkFun_TB6612.h>
 #include <QTRSensors.h>
 #include <PID.h>
+#include <LMP.h>
 #include <ESP32Servo.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+// #include <BluetoothSerial.h>
 
-#define LED_BUILTIN 2
-
-// TB6612FNG pinout
-#define AIN1 18
-#define BIN1 21
-#define AIN2 5
-#define BIN2 22
-#define PWMA 2
-#define PWMB 23
-#define STBY 19
-
-// Speed
-#define maxSpeed 200
-
-/* Motors objects */
 Motor leftMotor = Motor(AIN1, AIN2, PWMA, 1, STBY);
 Motor rightMotor = Motor(BIN1, BIN2, PWMB, 1, STBY);
 
 Servo servoMotor;
 
-#define servoMotorPin 13
-
 QTRSensors lineSensor;
-
 PIDController pid;
-
-#define numberOfSensors 8
-uint8_t lineSensorPins[numberOfSensors] = {34, 35, 32, 33, 25, 26, 27, 14};
 uint16_t lineSensorValues[numberOfSensors];
+
+float line_position = 0;
+float correction = 0;
 
 void configureLineSensor();
 void calibrateLineSensor();
 
-// Discrete Sensors
-#define leftSensor 39
-#define rightSensor 36
-#define loadSensor 15
-
 bool leftSensorDetected = false;
 bool rightSensorDetected = false;
 
-int countLeft = 0;
-int countRight = 0;
-
 bool loaded = false;
-bool unloading = false;
+bool stopMotors = false;
 
-float map_line_position(float x, float inMin, float inMax, float outMin, float outMax) {
-  return (x - inMin) * (outMax - outMin) / (inMax - inMin) + outMin;
-}
+/* Here are the scope definitions of the tasks to be used by the robot */
+void read_sensors(void* parameters);
+void unloading_routine(void* parameters);
+void loading_routine(void* parameters);
+void control_loop(void* parameters);
+void motors_actuation(void* parameters);
+
+SemaphoreHandle_t xLinePositionSemaphore;
+
+float map_line_position(float x, float inMin, float inMax, float outMin, float outMax);
 
 void checkLeftSensor() {
-  leftSensorDetected = digitalRead(leftSensor) == HIGH ?
-    true : false;
+  leftSensorDetected = digitalRead(leftSensor) == HIGH;
 }
 
 void checkRightSensor() {
-  rightSensorDetected = digitalRead(rightSensor) == HIGH ?
-    true : false;
+  rightSensorDetected = digitalRead(rightSensor) == HIGH;
 }
 
 void checkState() {
   loaded = loaded == true ? false : true;
 }
 
-int countMarkings = 0;
+// BluetoothSerial SerialBT;
 
 void setup() {
 
+  Serial.begin(115200);
+  // SerialBT.begin("LMP-AGV-V2");
+
   configureLineSensor();
   calibrateLineSensor();
-  pid.updateConstants(5.0, 0.0, 35.0);
+  pid.updateConstants(1.2, 0.0, 65.0);
 
   pinMode(leftSensor, INPUT);
   pinMode(rightSensor, INPUT);
   pinMode(loadSensor, INPUT);
 
+  servoMotor.attach(servoMotorPin);
+
   attachInterrupt(leftSensor, checkLeftSensor, RISING);
   attachInterrupt(digitalPinToInterrupt(rightSensor), checkRightSensor, RISING);
   attachInterrupt(digitalPinToInterrupt(loadSensor), checkState, FALLING);
 
-  servoMotor.attach(servoMotorPin);
+  xLinePositionSemaphore = xSemaphoreCreateBinary();
+  xSemaphoreGive(xLinePositionSemaphore);
+
+  /* 
+    Creating the tasks to be used by the robot, based on previous research, we have the following:
+
+    1 - reading_sensors - To be run on the core 0 - Priority 3
+    2 - control_loop - To be run on the core 1 - Priority 5
+    3 - motors_actuation - To be run on the core 1 - Priority 4
+
+  */
+
+  xTaskCreatePinnedToCore(
+    &read_sensors,
+    "reading_sensors",
+    4096,
+    NULL,
+    3,
+    NULL,
+    PRO_CPU_NUM
+  );
+
+  xTaskCreatePinnedToCore(
+    &control_loop,
+    "control_loop",
+    4096,
+    NULL,
+    5,
+    NULL,
+    APP_CPU_NUM
+  );
+
+  xTaskCreatePinnedToCore(
+    &motors_actuation,
+    "running_motors",
+    4096,
+    NULL,
+    4,
+    NULL,
+    APP_CPU_NUM
+  );
 }
 
 void loadingRoutine() {
   while(!loaded) {
-    leftMotor.drive(0);
-    rightMotor.drive(0);
     servoMotor.write(180);
-    delay(500);
+    delay(5);
   }
 }
 
 void unloadingRoutine() {
   while(loaded) {
-    leftMotor.drive(0);
-    rightMotor.drive(0);
     servoMotor.write(0);
-    delay(500);
+    delay(5);
   }
 }
 
-void loop() {
-  float linePosition = map_line_position(lineSensor.readLineWhite(lineSensorValues), 0.0, 7000.0, -1.0, 1.0);
-  float correction = pid.calculateCorrection(linePosition); 
-  leftMotor.drive(constrain((1.0 - correction) * maxSpeed, (-1.0/5.0) * maxSpeed, maxSpeed));
-  rightMotor.drive(constrain((1.0 + correction) * maxSpeed, (-1.0/5.0) * maxSpeed, maxSpeed)); 
-  if(rightSensorDetected && !loaded) {
-    loadingRoutine();
-    delay(1500);
-    servoMotor.write(90);
-    leftMotor.drive(100);
-    rightMotor.drive(100);
-    delay(200);
-    rightSensorDetected = false;
-  }
-  if(rightSensorDetected && loaded) {
-    unloadingRoutine();
-    delay(1500);
-    servoMotor.write(90);
-    leftMotor.drive(100);
-    rightMotor.drive(100);
-    delay(200);
-    rightSensorDetected = false;
-  }
-}
+void loop() { }
 
 void configureLineSensor() {
   lineSensor.setTypeAnalog();
@@ -153,4 +154,79 @@ void calibrateLineSensor() {
   }
   delay(500);
   digitalWrite(LED_BUILTIN, LOW);
+}
+
+/* Reads and updates the variables related to each one of the sensors */
+void read_sensors(void* parameters) {
+  for(;;) {
+    // Serial.println("\nread_sensors");
+    // SerialBT.println(loaded);
+    line_position = map_line_position(
+      lineSensor.readLineWhite(lineSensorValues), 0.0, 7000.0, -1.0, 1.0
+    );
+    vTaskDelay(1);
+  }
+  vTaskDelete(NULL);
+}
+
+void control_loop(void* parameters) {
+  const TickType_t xFrequency = 2 / portTICK_PERIOD_MS;
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+  for(;;) {
+    if(xSemaphoreTake(xLinePositionSemaphore, pdMS_TO_TICKS(2)) == true) {
+      // Serial.println("\ncontrol_loop");
+      correction = pid.calculateCorrection(line_position);
+      if(rightSensorDetected && !loaded) {
+        stopMotors = true;
+        loadingRoutine();
+        delay(15);
+        servoMotor.write(90);
+        // leftMotor.drive(100);
+        // rightMotor.drive(100);
+        delay(2);
+        rightSensorDetected = false;
+        stopMotors = false;
+      }
+      if(rightSensorDetected && loaded) {
+        stopMotors = true;
+        unloadingRoutine();
+        delay(15);
+        servoMotor.write(90);
+        // leftMotor.drive(100);
+        // rightMotor.drive(100);
+        delay(2);
+        rightSensorDetected = false;
+        stopMotors = false;
+      }
+      // Serial.println("CONTROLE\n");
+      xSemaphoreGive(xLinePositionSemaphore);
+    }
+    vTaskDelayUntil(&xLastWakeTime, xFrequency);
+  }
+  vTaskDelete(NULL);
+}
+
+void motors_actuation(void* parameters) {
+  for(;;) {
+    if(xSemaphoreTake(xLinePositionSemaphore, pdMS_TO_TICKS(2)) == true) {
+      // SerialBT.println(stopMotors); <--- WHEN THIS was active
+      if(!stopMotors) {
+        leftMotor.drive(constrain((1.0 - correction) * maxSpeed, (-1.0/5.0) * maxSpeed, maxSpeed));
+        rightMotor.drive(constrain((1.0 + correction) * maxSpeed, (-1.0/5.0) * maxSpeed, maxSpeed)); 
+      }
+      else {
+        leftMotor.drive(0);
+        rightMotor.drive(0);
+      }
+      // Serial.println("\nmotors_actuation");
+      // Serial.println("MOTOR\n");
+      xSemaphoreGive(xLinePositionSemaphore);
+    }
+    vTaskDelay(1);
+  }
+  vTaskDelete(NULL);
+}
+
+float map_line_position(float x, float inMin, float inMax, float outMin, float outMax) {
+  return (x - inMin) * (outMax - outMin) / (inMax - inMin) + outMin;
 }
