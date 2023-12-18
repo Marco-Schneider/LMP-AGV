@@ -75,7 +75,7 @@ void setup() {
 
   configureLineSensor();
   calibrateLineSensor();
-  pid.updateConstants(5.0, 0.0, 35.0);
+  pid.updateConstants(2.0, 0.0, 25.0);
 
   pinMode(leftSensor, INPUT);
   pinMode(rightSensor, INPUT);
@@ -117,7 +117,7 @@ void loop() {
     servoMotor.write(90);
     leftMotor.drive(100);
     rightMotor.drive(100);
-    delay(200);
+    delay(300);
     rightSensorDetected = false;
   }
   if(rightSensorDetected && loaded) {
@@ -126,7 +126,7 @@ void loop() {
     servoMotor.write(90);
     leftMotor.drive(100);
     rightMotor.drive(100);
-    delay(200);
+    delay(300);
     rightSensorDetected = false;
   }
 }
