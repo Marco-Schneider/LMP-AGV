@@ -164,6 +164,9 @@ void read_sensors(void* parameters) {
     line_position = map_line_position(
       lineSensor.readLineWhite(lineSensorValues), 0.0, 7000.0, -1.0, 1.0
     );
+    rightSensorDetected = digitalRead(rightSensor) == 1; 
+    leftSensorDetected = digitalRead(leftSensor) == 1;
+    // Serial.println("SENSOR\n");
     vTaskDelay(1);
   }
   vTaskDelete(NULL);
